@@ -2,21 +2,50 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { getProductById, getAllProducts } from '@/app/lib/api';
+import prisma from '@/app/lib/prisma.js';
+import AddToCartButton from '@/app/components/AddToCartButton';
+import AddToFavoritesButton from '@/app/components/AddToFavoritesButton';
+
 
 // Generer les routes statiques au build (SSG)
 export async function generateStaticParams() {
-  const products = await getAllProducts();
+  const apiProducts = await getAllProducts();
+  const dbProducts = await prisma.product.findMany();
 
-  return products.map(product => ({
-    id: product.id.toString(), // Doit etre string
+  const dbProductsFormatted = dbProducts.map(p => ({
+    id: `db-${p.id}`, // préfixe pour différencier
   }));
+
+  const apiProductsFormatted = apiProducts.map(p => ({
+    id: p.id.toString(),
+  }));
+
+  return [...dbProductsFormatted, ...apiProductsFormatted];
 }
+
 
 // Metadata dynamique (SEO)
 export async function generateMetadata({ params }) {
+  const { id } = await params;
+
   try {
-    const { id } = await params;
-    const product = await getProductById(id);
+    let product;
+    if (id.startsWith('db-')) {
+      const dbId = Number(id.replace('db-', ''));
+      const dbProduct = await prisma.product.findUnique({
+        where: { id: dbId },
+        include: { category: true },
+      });
+      if (!dbProduct) throw new Error('DB product not found');
+
+      product = {
+        title: dbProduct.title,
+        description: dbProduct.description,
+        image: dbProduct.image,
+      };
+    } else {
+      product = await getProductById(id);
+    }
 
     return {
       title: `${product.title} | E-Commerce Store`,
@@ -30,20 +59,46 @@ export async function generateMetadata({ params }) {
     };
   } catch (error) {
     return {
-      title: 'Produit non trouve',
+      title: 'Produit non trouvé',
     };
   }
 }
 
+
 // Page produit
 export default async function ProductPage({ params }) {
-  const { id } = await params;
+  // Déstructurer après await
+  const { id } = await params; 
   let product;
 
   try {
-    product = await getProductById(id);
-  } catch (error) {
-    // Si produit n'existe pas, afficher 404
+    if (id.startsWith('db-')) {
+      const dbId = Number(id.replace('db-', ''));
+      const dbProduct = await prisma.product.findUnique({
+        where: { id: dbId },
+        include: { category: true },
+      });
+
+      if (!dbProduct) notFound();
+
+      product = {
+        id: `db-${dbProduct.id}`,
+        title: dbProduct.title,
+        description: dbProduct.description,
+        price: dbProduct.price,
+        image: dbProduct.image,
+        category: dbProduct.category.name,
+        rating: {
+          rate: dbProduct.ratingRate,
+          count: dbProduct.ratingCount,
+        },
+      };
+    } else {
+      // Produit API
+      product = await getProductById(id);
+    }
+  } catch (err) {
+    console.error('Erreur fetch product', id, err);
     notFound();
   }
 
@@ -62,12 +117,10 @@ export default async function ProductPage({ params }) {
       <div className="grid md:grid-cols-2 gap-12">
         {/* Colonne gauche : Image */}
         <div className="relative aspect-square bg-gray-100 rounded-lg overflow-hidden">
-          <Image
+          <img
             src={product.image}
             alt={product.title}
-            fill
             className="object-contain p-8"
-            priority
             sizes="(max-width: 768px) 100vw, 50vw"
           />
         </div>
@@ -117,14 +170,17 @@ export default async function ProductPage({ params }) {
 
           {/* Actions */}
           <div className="space-y-4">
-            <button className="w-full bg-blue-600 text-white px-8 py-4 rounded-lg hover:bg-blue-700 transition font-semibold text-lg">
-              Ajouter au panier
-            </button>
+            {/* Ajouter au panier uniquement si produit DB */}
+            {String(product.id).startsWith('db-') && (
+              <AddToCartButton productId={String(product.id).replace('db-', '')} />
+            )}
 
-            <button className="w-full bg-gray-200 text-gray-800 px-8 py-4 rounded-lg hover:bg-gray-300 transition font-semibold text-lg">
-              Ajouter aux favoris
-            </button>
+            {/* Ajouter aux favoris reste inchangé */}
+            {String(product.id).startsWith("db-") && (
+              <AddToFavoritesButton productId={String(product.id).replace("db-", "")} />
+            )}
           </div>
+
 
           {/* Informations supplementaires */}
           <div className="mt-8 pt-8 border-t border-gray-200">
